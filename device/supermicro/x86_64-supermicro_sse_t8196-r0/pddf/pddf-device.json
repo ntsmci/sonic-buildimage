@@ -189,6 +189,14 @@
             "ipmitool" : {
                 "attr_list":
                 [
+                    { "attr_name":"fan1_fault", "bmc_cmd":"if [ $(ipmitool raw 0x30 0x89 0x03 0x00 0x04) = '02' ]; then echo 1; else echo 0; fi", "raw":"1","type":"raw"},
+                    { "attr_name":"fan2_fault", "bmc_cmd":"if [ $(ipmitool raw 0x30 0x89 0x03 0x00 0x04) = '02' ]; then echo 1; else echo 0; fi", "raw":"1","type":"raw"},
+                    { "attr_name":"fan3_fault", "bmc_cmd":"if [ $(ipmitool raw 0x30 0x89 0x03 0x00 0x05) = '02' ]; then echo 1; else echo 0; fi", "raw":"1","type":"raw"},
+                    { "attr_name":"fan4_fault", "bmc_cmd":"if [ $(ipmitool raw 0x30 0x89 0x03 0x00 0x05) = '02' ]; then echo 1; else echo 0; fi", "raw":"1","type":"raw"},
+                    { "attr_name":"fan5_fault", "bmc_cmd":"if [ $(ipmitool raw 0x30 0x89 0x03 0x00 0x06) = '02' ]; then echo 1; else echo 0; fi", "raw":"1","type":"raw"},
+                    { "attr_name":"fan6_fault", "bmc_cmd":"if [ $(ipmitool raw 0x30 0x89 0x03 0x00 0x06) = '02' ]; then echo 1; else echo 0; fi", "raw":"1","type":"raw"},
+                    { "attr_name":"fan7_fault", "bmc_cmd":"if [ $(ipmitool raw 0x30 0x89 0x03 0x00 0x07) = '02' ]; then echo 1; else echo 0; fi", "raw":"1","type":"raw"},
+                    { "attr_name":"fan8_fault", "bmc_cmd":"if [ $(ipmitool raw 0x30 0x89 0x03 0x00 0x07) = '02' ]; then echo 1; else echo 0; fi", "raw":"1","type":"raw"},
                     { "attr_name":"fan1_present", "bmc_cmd":"if [ $(ipmitool raw 0x30 0x89 0xc 0x04) = '00' ]; then echo 1; else echo 0; fi", "raw":"1","type":"raw"},
                     { "attr_name":"fan2_present", "bmc_cmd":"if [ $(ipmitool raw 0x30 0x89 0xc 0x04) = '00' ]; then echo 1; else echo 0; fi", "raw":"1","type":"raw"},
                     { "attr_name":"fan3_present", "bmc_cmd":"if [ $(ipmitool raw 0x30 0x89 0xc 0x05) = '00' ]; then echo 1; else echo 0; fi", "raw":"1","type":"raw"},

@@ -16,6 +16,28 @@ class Fan(PddfFan):
         # idx is 0-based
         PddfFan.__init__(self, tray_idx, fan_idx, pddf_data, pddf_plugin_data, is_psu_fan, psu_index)
 
+    def get_fault(self):
+        if self.is_psu_fan:
+            return False
+
+        idx = (self.fantray_index-1)*self.platform['num_fans_pertray'] + self.fan_index
+        attr_name = "fan" + str(idx) + "_fault"
+        output = self.pddf_obj.get_attr_name_output("FAN-CTRL", attr_name)
+        if not output:
+            return False
+
+        mode = output['mode']
+        fault = output['status'].rstrip()
+        vmap = self.plugin_data['FAN']['fault'][mode]['valmap']
+        if fault in vmap:
+            return vmap[fault]
+        return False
+
+    def get_status(self):
+        speed = self.get_speed_rpm()
+        fault = self.get_fault()
+        return (speed != 0 and not fault)
+
     # Provide the functions/variables below for which implementation is to be overwritten e.g.
     #def get_name(self):
         ## Since AS7712 has two fans in a tray, modifying this function to return proper name

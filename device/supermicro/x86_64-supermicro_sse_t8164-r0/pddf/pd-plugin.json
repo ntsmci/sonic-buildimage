@@ -36,6 +36,14 @@
             }
         },
 
+        "fault":
+        {
+            "bmc":
+            {
+               "valmap": {"1":true, "0":false}
+            }
+        },
+
         "fan_master_led_color":
         {
             "colmap": {"green":"green", "red":"yellow"}
