@@ -268,8 +268,8 @@ libevent-dev==2.1.13-stable-1~deb13u1
 libevent-extra-2.1-7t64==2.1.13-stable-1~deb13u1
 libevent-openssl-2.1-7t64==2.1.13-stable-1~deb13u1
 libevent-pthreads-2.1-7t64==2.1.13-stable-1~deb13u1
-libexpat1==2.8.3-1~deb13u1
-libexpat1-dev==2.8.3-1~deb13u1
+libexpat1==2.9.0-1~deb13u1
+libexpat1-dev==2.9.0-1~deb13u1
 libfabric1==2.1.0-1.1
 libfakeroot==1.37.1.1-1
 libfastjson4==1.2304.0-2
@@ -654,7 +654,7 @@ libzopfli1==1.0.3-3
 libzstd-dev==1.5.7+dfsg-1
 libzvbi-common==0.2.44-1
 libzvbi0t64==0.2.44-1
-linux-libc-dev==6.12.111-1
+linux-libc-dev==6.12.113-1
 linux-sysctl-defaults==4.12.1
 llvm==1:19.0-63
 llvm-19==1:19.1.7-3+b1
