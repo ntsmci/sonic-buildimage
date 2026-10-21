@@ -14,6 +14,8 @@ import syslog
 from sonic_py_common import daemon_base, logger, syslogger
 import grpc
 import queue
+import json
+import re
 
 SYSLOG_IDENTIFIER = 'dpu-db-utild'
 logger_instance = syslogger.SysLogger(SYSLOG_IDENTIFIER)
@@ -51,8 +53,29 @@ SIGNALS_TO_NAMES_DICT = dict((getattr(signal, n), n) for n in dir(signal) if n.s
 # operd event functions
 g_count = 0
 CRITICAL_EVENTS = [
-    2, 4, 6, 7, 11, 12, 15, 16, 17, 18, 19, 20, 4001, 4002
+    2, 4, 6, 7, 11, 12, 15, 16, 17, 18, 19, 20, 24, 26, 28, 4001, 4002
 ]
+# Recovery events map to the critical event they clear. A critical event keeps
+# the data plane down until every condition it latched has been cleared, so
+# conditions that recover on their own do not need manual intervention.
+RECOVERY_EVENTS = {
+    13: 12,   # filesystem usage dropped back below threshold
+    25: 24,   # system memory usage back to normal
+    27: 26    # sysmgr service memory usage back to normal
+}
+# These events are raised once per filesystem path or per sysmgr service (and
+# once more for all services together), and each instance recovers on its own.
+# The instance is only named in the event message.
+EVENT_SUBJECT_PATTERNS = {
+    12: re.compile(r'^(\S+) is (?:above|below) filesystem usage threshold'),
+    26: re.compile(r'^sysmgr service "([^"]+)" memory usage'),
+}
+BOOT_ID_PATH = '/proc/sys/kernel/random/boot_id'
+DATA_PLANE_FIELDS = ('dpu_data_plane_state', 'dpu_data_plane_time',
+                     'dpu_data_plane_reason', 'dpu_data_plane_conditions')
+# Stands in for stored conditions that cannot be parsed. No recovery event maps
+# to it, so it holds the data plane down until the DPU reboots.
+UNPARSED_CONDITION = (0, 'unparsed')
 NETWORK_EVENTS = [
     1001,   # "Port link is up"
     1002    # "Port link is down"
@@ -81,6 +104,7 @@ class EventHandler(logger.Logger):
         # operd attributes
         self.event_types = []
         self.event_types.extend(CRITICAL_EVENTS)
+        self.event_types.extend(RECOVERY_EVENTS.keys())
         self.event_types.extend(NETWORK_EVENTS)
         self.request_queue = queue.Queue()
         self.thread = None
@@ -89,10 +113,15 @@ class EventHandler(logger.Logger):
         # dpu state db update related attributes
         self.apiHelper = APIHelper()
         self.db = db
+        self.active_conditions = {}
+        self.lock = threading.Lock()
+        self.pending_write = False
         self.chassis = chassis
         slot = get_slot_id(self.chassis)
         self.slot_id = str(slot) if slot != -1 else 'UNDEFINED'
         self.table = f'{DPU_HEALTH_INFO_TABLE_NAME}|DPU{self.slot_id}'
+        self.boot_id = self._read_boot_id()
+        self._restore_data_plane_state()
 
     def _log_emerg(self, msg):
         # syslogger.SysLogger doesn't have LOG_EMERG, hence creating one
@@ -159,6 +188,108 @@ class EventHandler(logger.Logger):
         except Exception as e:
             log_err(f'Failed to populate dpu control plane entries due to {e}')
 
+    def _read_boot_id(self):
+        try:
+            with open(BOOT_ID_PATH) as f:
+                return f.read().strip()
+        except Exception as e:
+            log_err(f'Failed to read boot id due to {e}')
+            return None
+
+    def _restore_data_plane_state(self):
+        # DPU_STATE lives in the NPU's chassis db, so it outlives both a DPU
+        # reboot and a restart of this daemon. Conditions recorded during this
+        # boot still hold and are restored. Anything from an earlier boot no
+        # longer applies and is dropped, so that this boot's events and
+        # fetch_dpu_status repopulate it. Errors are raised, not logged:
+        # processing events without the recorded conditions could overwrite
+        # them and let the data plane be reported up.
+        if self.db == None:
+            return
+        stored_boot_id = self.db.hget(self.table, 'dpu_data_plane_boot_id')
+        # without a boot id a reboot cannot be told apart from a restart, so
+        # keep what is recorded rather than risk dropping a live condition
+        if self.boot_id is None or stored_boot_id == self.boot_id:
+            self._load_conditions()
+            if self.active_conditions:
+                log_info(f"Restored data plane conditions: "
+                         f"{', '.join(self.active_conditions.values())}")
+            return
+        stale = self.db.hget(self.table, 'dpu_data_plane_reason')
+        self.db.hdel(self.table, *DATA_PLANE_FIELDS)
+        self.db.hset(self.table, 'dpu_data_plane_boot_id', self.boot_id)
+        if stale:
+            log_info(f"Cleared data plane state left over from a previous "
+                     f"boot, was: {stale}")
+
+    def _load_conditions(self):
+        stored = self.db.hget(self.table, 'dpu_data_plane_conditions')
+        if not stored:
+            return
+        try:
+            entries = json.loads(stored)
+            if not isinstance(entries, list):
+                raise ValueError('not a list')
+            conditions = {(int(event_type), str(subject)): str(reason)
+                          for event_type, subject, reason in entries}
+        except (ValueError, TypeError) as e:
+            log_err(f'Failed to parse stored data plane conditions {stored!r} due to {e}')
+            conditions = {UNPARSED_CONDITION:
+                          self.db.hget(self.table, 'dpu_data_plane_reason') or stored}
+        self.active_conditions = conditions
+
+    def _condition_key(self, event_type, message):
+        pattern = EVENT_SUBJECT_PATTERNS.get(event_type)
+        match = pattern.match(message) if pattern and message else None
+        return (event_type, match.group(1) if match else '')
+
+    def _write_dpu_data_plane_db(self):
+        if self.db == None:
+            return
+        try:
+            if not self.active_conditions:
+                # fetch_dpu_status takes the data plane fields back once they no
+                # longer hold a down this process owns, and only reports up after
+                # checking pdsagent and pciemgrd
+                self.db.hdel(self.table, *DATA_PLANE_FIELDS)
+            else:
+                conditions = [[event_type, subject, reason]
+                              for (event_type, subject), reason in self.active_conditions.items()]
+                fvs_data_plane_data = {
+                    'dpu_data_plane_state': 'down',
+                    'dpu_data_plane_time': datetime.now().strftime("%a %b %d %I:%M:%S %p UTC %Y"),
+                    'dpu_data_plane_reason': ', '.join(self.active_conditions.values()),
+                    'dpu_data_plane_conditions': json.dumps(conditions)
+                }
+                if self.boot_id:
+                    fvs_data_plane_data['dpu_data_plane_boot_id'] = self.boot_id
+                self.db.hset(self.table, mapping=fvs_data_plane_data)
+            self.pending_write = False
+        except Exception as e:
+            # the conditions in memory are authoritative, and the daemon loop
+            # retries the write until the chassis db is reachable again
+            self.pending_write = True
+            log_err(f'Failed to write dpu data plane state due to {e}, will retry')
+
+    def _assert_dpu_condition(self, key, reason):
+        with self.lock:
+            self.active_conditions[key] = reason
+            self._write_dpu_data_plane_db()
+
+    def _clear_dpu_condition(self, key):
+        # only conditions that were asserted are cleared, so a recovery event
+        # can never release a latch owned by an unrelated critical event
+        with self.lock:
+            if key not in self.active_conditions:
+                return
+            del self.active_conditions[key]
+            self._write_dpu_data_plane_db()
+
+    def retry_pending_write(self):
+        with self.lock:
+            if self.pending_write:
+                self._write_dpu_data_plane_db()
+
     def _process_event(self, event):
         global g_count
 
@@ -170,6 +301,10 @@ class EventHandler(logger.Logger):
             log_err(f"Failed to process event due to {e}")
             return
 
+        # Message carries the formatted detail (path, threshold, mount point),
+        # Description is only the static text attached to the event type
+        event_reason = event_message if event_message else event_description
+
         try:
             if event_type in CRITICAL_EVENTS:
                 # log event
@@ -178,17 +313,17 @@ class EventHandler(logger.Logger):
                 self._log_emerg(f"Received event {event}")
 
                 # update dpu state db for data plane
-                if self.db == None:
-                    return
-                dpu_data_plane_status = 'down'
-                dpu_data_plane_reason = event_description
-                fvs_data_plane_data = [
-                    ('dpu_data_plane_state', dpu_data_plane_status),
-                    ('dpu_data_plane_time', datetime.now().strftime("%a %b %d %I:%M:%S %p UTC %Y")),
-                    ('dpu_data_plane_reason', dpu_data_plane_reason)
-                ]
-                for name, value in fvs_data_plane_data:
-                    self.db.hset(self.table, name, value)
+                self._assert_dpu_condition(
+                    self._condition_key(event_type, event_message), event_reason)
+            elif event_type in RECOVERY_EVENTS:
+                # log event
+                g_count += 1
+                log_info(f"Event # {g_count} Time -> {time.asctime()}")
+                log_info(f"Received event {event}")
+
+                # update dpu state db for data plane
+                self._clear_dpu_condition(
+                    self._condition_key(RECOVERY_EVENTS[event_type], event_message))
         except Exception as e:
             log_err(f"Failed to update dpu state db data plane fields due to {e}")
 
@@ -265,8 +400,8 @@ class EventHandler(logger.Logger):
 # Daemon =======================================================================
 #
 class DpuDBUtilDaemon(daemon_base.DaemonBase):
-    # Interval to update CHASSIS_STATE_DB
-    INTERVAL = 60
+    # Interval at which a failed CHASSIS_STATE_DB write is retried
+    INTERVAL = 10
 
     def __init__(self):
         """
@@ -297,7 +432,13 @@ class DpuDBUtilDaemon(daemon_base.DaemonBase):
             pass
         if self.db == None:
             return
-        self.event_handler = EventHandler(self.chassis, self.db)
+        try:
+            self.event_handler = EventHandler(self.chassis, self.db)
+        except Exception as e:
+            # exit, so that the service is restarted and restoring is retried
+            log_err(f'Failed to restore dpu data plane state due to {e}')
+            self.db = None
+            return
         self.event_handler.start()
 
     def deinit(self):
@@ -340,6 +481,7 @@ class DpuDBUtilDaemon(daemon_base.DaemonBase):
         """
         if self.db == None:
             return False
+        self.event_handler.retry_pending_write()
         if self.stop_event.wait(self.wait_time):
             # We received a fatal signal
             return False
