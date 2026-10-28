@@ -15,3 +15,8 @@ Package: platform-modules-sse-t8196
 Architecture: amd64
 Depends: ${misc:Depends}, ${python3:Depends}
 Description: kernel modules for platform devices such as fan, led, sfp
+
+Package: platform-modules-sse-t8264
+Architecture: amd64
+Depends: ${misc:Depends}, ${python3:Depends}
+Description: kernel modules for platform devices such as fan, led, sfp

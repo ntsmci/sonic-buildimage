@@ -11,7 +11,7 @@ PACKAGE_PRE_NAME := platform-modules
 KVERSION   ?= $(shell uname -r)
 KERNEL_SRC :=  /lib/modules/$(KVERSION)
 MOD_SRC_DIR:= $(shell pwd)
-MODULE_DIRS:= sse-t8164 sse-t8196
+MODULE_DIRS:= sse-t8164 sse-t8196 sse-t8264
 UTILS_DIR := utils
 SERVICE_DIR := service
 
