@@ -3,7 +3,6 @@
 try:
     import time
     from sonic_platform_pddf_base.pddf_sfp import PddfSfp
-    from sonic_platform_base.sonic_xcvr.sfp_optoe_base import SfpOptoeBase
     import re
 except ImportError as e:
     raise ImportError (str(e) + "- required module not found")
@@ -98,21 +97,42 @@ class Sfp(PddfSfp):
 
         return status
 
-    def get_lpmode(self):
+    def get_lpmode_via_pin(self):
         """
         Retrieves the lpmode (low power mode) status of this SFP
         Returns:
             A Boolean, True if lpmode is enabled, False if disabled
         """
-        if self.sfp_type is None or self._xcvr_api is None:
-            self.refresh_xcvr_api()
+        lpmode = False
 
-        if self.sfp_type == 'QSFP-DD':
-            return SfpOptoeBase.get_lpmode(self)
+        if not self.get_presence():
+            return lpmode
+
+        device = 'PORT{}'.format(self.port_index)
+        path_val = self.pddf_obj.get_path(device, 'xcvr_lpmode')
+
+        if path_val is None:
+            pass
         else:
-            return False
+            path_dir = re.sub(r'/value$', '/direction', path_val)
+            try:
+                with open(path_dir, 'r') as f_dir:
+                    dir = f_dir.read()
+            except IOError:
+                lpmode = super().get_lpmode_via_pin()
+                return lpmode
 
-    def set_lpmode(self, lpmode):
+            if not dir:
+                lpmode = super().get_lpmode_via_pin()
+            else:
+                if dir.rstrip() == 'in':
+                    lpmode = True
+                else:
+                    lpmode = False
+
+        return lpmode
+
+    def set_lpmode_via_pin(self, lpmode):
         """
         Sets the lpmode (low power mode) of SFP
         Args:
@@ -121,12 +141,38 @@ class Sfp(PddfSfp):
         Returns:
             A boolean, True if lpmode is set successfully, False if not
         """
-        if self.sfp_type is None or self._xcvr_api is None:
-            self.refresh_xcvr_api()
+        status = False
 
-        if self.sfp_type == 'QSFP-DD':
-            return SfpOptoeBase.set_lpmode(self, lpmode)
+        device = 'PORT{}'.format(self.port_index)
+        path_val = self.pddf_obj.get_path(device, 'xcvr_lpmode')
+
+        # TODO: put the optic based reset logic using EEPROM
+        if path_val is None:
+            pass
         else:
+            if not self.get_presence():
+                return status
+            path_dir = re.sub(r'/value$', '/direction', path_val)
+            try:
+                f_dir = open(path_dir, 'r+')
+            except IOError as e:
+                return False
+
+            try:
+                if lpmode:
+                    f_dir.write('in')
+                else:
+                    f_dir.write('high')
+
+                f_dir.close()
+                status = True
+            except IOError as e:
+                status = False
+
+        return status
+
+    def get_lpmode(self):
+        # SFP / SFP+ / SFP28 don't have an lpmode concept
+        if self.sfp_type in ('SFP', 'SFP+', 'SFP28'):
             return False
-
-
+        return super().get_lpmode()
